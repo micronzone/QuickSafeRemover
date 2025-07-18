@@ -1,0 +1,104 @@
+#!/bin/bash
+
+set -eo pipefail
+IFS=$'\n\t'
+
+# Colors
+RED=$(tput setaf 1)
+GREEN=$(tput setaf 2)
+YELLOW=$(tput setaf 3)
+CYAN=$(tput setaf 6)
+NC=$(tput sgr0)
+
+# Defaults
+DRY_RUN=true
+FORCE=false
+TARGET_FILE=""
+declare -a TARGETS=()
+declare -a DELETED=()
+declare -a FAILED=()
+
+timestamp() { date "+%Y-%m-%d %H:%M:%S"; }
+
+print() { printf "%s%s%s\n" "$1" "$2" "$NC"; }
+info() { print "$CYAN" "$1"; }
+warn() { print "$YELLOW" "$1"; }
+error() { print "$RED" "$1"; }
+ok() { print "$GREEN" "$1"; }
+
+usage() {
+	cat <<EOF
+${CYAN}Quick Safe Remover${NC}
+Usage:
+  $(basename "$0") [-f] [-r] path_list.txt
+
+Options:
+  -f    Force delete without confirmation
+  -r    Real delete (default is dry-run)
+EOF
+	exit 1
+}
+
+# Trap Ctrl+C
+trap "warn 'Aborted by user'; exit 130" SIGINT
+
+# Parse args
+while [[ "$1" =~ ^- ]]; do
+	case "$1" in
+	-f) FORCE=true ;;
+	-r) DRY_RUN=false ;;
+	*) usage ;;
+	esac
+	shift
+done
+
+[ -z "$1" ] && usage
+TARGET_FILE="$1"
+[ ! -r "$TARGET_FILE" ] && {
+	error "File not found: $TARGET_FILE"
+	exit 1
+}
+
+info "Loading paths from: $TARGET_FILE"
+while IFS= read -r line || [ -n "$line" ]; do
+	path="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+	[ -z "$path" ] && continue
+	[ -e "$path" ] && TARGETS+=("$path") || warn "[NOT FOUND] $path"
+done <"$TARGET_FILE"
+
+[ ${#TARGETS[@]} -eq 0 ] && {
+	warn "No valid paths to delete."
+	exit 0
+}
+
+info "Total targets: ${#TARGETS[@]}"
+$DRY_RUN && warn "Dry-run mode ON"
+
+if [ "$FORCE" = false ]; then
+	printf "${YELLOW}Proceed with deletion? [y/N] ${NC}"
+	read -r answer
+	[[ ! "$answer" =~ ^[yY]$ ]] && {
+		warn "Canceled."
+		exit 0
+	}
+fi
+
+for path in "${TARGETS[@]}"; do
+	if $DRY_RUN; then
+		warn "[DRY-RUN] Would delete: $path"
+		DELETED+=("$path")
+	else
+		if rm -rf "$path" 2>/dev/null; then
+			ok "[DELETED] $path"
+			DELETED+=("$path")
+		else
+			error "[FAILED] $path"
+			FAILED+=("$path")
+		fi
+	fi
+done
+
+info "\n--- Summary ---"
+info "Total  : ${#TARGETS[@]}"
+ok "Deleted: ${#DELETED[@]}"
+[ ${#FAILED[@]} -gt 0 ] && error "Failed : ${#FAILED[@]}"
